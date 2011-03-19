@@ -78,8 +78,9 @@ import javax.crypto.spec.PBEKeySpec;
 class MountService extends IMountService.Stub
         implements INativeDaemonConnectorCallbacks {
     private static final boolean LOCAL_LOGD = false;
-    private static final boolean DEBUG_UNMOUNT = false;
-    private static final boolean DEBUG_EVENTS = false;
+    private static final boolean DEBUG_MOUNT = true;
+    private static final boolean DEBUG_UNMOUNT = true;
+    private static final boolean DEBUG_EVENTS = true;
     private static final boolean DEBUG_OBB = false;
 
     private static final String TAG = "MountService";
@@ -446,12 +447,14 @@ class MountService extends IMountService.Stub
                 new Thread() {
                     public void run() {
                         ArrayList<String> volumesToMount = getShareableVolumes();
+                        Collections.sort(volumesToMount);
 
                         for (String path: volumesToMount) {
                             try {
                                 String state = getVolumeState(path);
 
                                 if (state.equals(Environment.MEDIA_UNMOUNTED)) {
+                                    Slog.d(TAG, "Attempt boot-time mount of " + path);
                                     int rc = doMountVolume(path);
                                     if (rc != StorageResultCode.OperationSucceeded) {
                                         Slog.e(TAG, String.format("Boot-time mount failed (%d)", rc));
@@ -842,9 +845,15 @@ class MountService extends IMountService.Stub
     private int doMountOneVolume(String path) {
         int rc = StorageResultCode.OperationSucceeded;
         File mountPoint = new File(path);
-        mountPoint.mkdirs();
+	    if (DEBUG_MOUNT) Slog.d(TAG, "doMountOneVolume: mkdirs(" + path + ")");
+        try {
+            if (!mountPoint.mkdirs())
+                Slog.e(TAG, "doMountOneVolume: mkdirs failed");
+        } catch (Exception ex) {
+            Slog.e(TAG, "doMountOneVolume: mkdirs for " + path + " threw exception", ex);
+        }
 
-        if (DEBUG_EVENTS) Slog.i(TAG, "doMountOneVolume: Mouting " + path);
+        if (DEBUG_EVENTS) Slog.i(TAG, "doMountOneVolume: Mounting " + path);
         try {
             mConnector.doCommand(String.format("volume mount %s", path));
         } catch (NativeDaemonConnectorException e) {
@@ -892,17 +901,21 @@ class MountService extends IMountService.Stub
     private int doMountVolume(String path) {
         ArrayList<String> volumes = getShareableVolumes();
         Collections.sort(volumes);
-        Slog.i(TAG, "doMountVolume: Mounting " + path);
+        if (DEBUG_MOUNT) Slog.d(TAG, "doMountVolume: Mounting " + path);
         for (String curpath: volumes) {
             if (curpath.equals(path))
                 break;
             else {
                 String testpath;
+                String state = getVolumeState(curpath);
+                if (Environment.MEDIA_MOUNTED.equals(state)) continue;
                 if (curpath.endsWith("/"))
                     testpath = curpath;
                 else
                     testpath = curpath + "/";
+                Slog.i(TAG, "doMountVolume: checking " + testpath);
                 if (path.startsWith(testpath)) {
+                    Slog.i(TAG, "doMountVolume: Mounting prefix " + curpath);
                     int rc = doMountOneVolume(curpath);
                     if (rc != StorageResultCode.OperationSucceeded)
                         return rc;
@@ -970,8 +983,9 @@ class MountService extends IMountService.Stub
         else
             testpath = path + "/";
         for (String curpath: volumes) {
-            if (curpath.equals(path))
-                break;
+            String state = getVolumeState(curpath);
+            if (!Environment.MEDIA_MOUNTED.equals(state)) continue;
+            if (curpath.equals(path)) break;
             else {
                 if (curpath.startsWith(testpath)) {
                     int rc = doUnmountOneVolume(curpath, force);
