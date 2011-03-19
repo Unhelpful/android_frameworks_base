@@ -48,6 +48,7 @@ import android.os.storage.StorageResultCode;
 import android.util.Slog;
 
 import java.io.FileDescriptor;
+import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.math.BigInteger;
@@ -55,6 +56,7 @@ import java.security.NoSuchAlgorithmException;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.KeySpec;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -837,10 +839,12 @@ class MountService extends IMountService.Stub
         return false;
     }
 
-    private int doMountVolume(String path) {
+    private int doMountOneVolume(String path) {
         int rc = StorageResultCode.OperationSucceeded;
+        File mountPoint = new File(path);
+        mountPoint.mkdirs();
 
-        if (DEBUG_EVENTS) Slog.i(TAG, "doMountVolume: Mouting " + path);
+        if (DEBUG_EVENTS) Slog.i(TAG, "doMountOneVolume: Mouting " + path);
         try {
             mConnector.doCommand(String.format("volume mount %s", path));
         } catch (NativeDaemonConnectorException e) {
@@ -885,6 +889,29 @@ class MountService extends IMountService.Stub
         return rc;
     }
 
+    private int doMountVolume(String path) {
+        ArrayList<String> volumes = getShareableVolumes();
+        Collections.sort(volumes);
+        Slog.i(TAG, "doMountVolume: Mounting " + path);
+        for (String curpath: volumes) {
+            if (curpath.equals(path))
+                break;
+            else {
+                String testpath;
+                if (curpath.endsWith("/"))
+                    testpath = curpath;
+                else
+                    testpath = curpath + "/";
+                if (path.startsWith(testpath)) {
+                    int rc = doMountOneVolume(curpath);
+                    if (rc != StorageResultCode.OperationSucceeded)
+                        return rc;
+                }
+            }
+        }
+        return doMountOneVolume(path);
+    }
+
     /*
      * If force is not set, we do not unmount if there are
      * processes holding references to the volume about to be unmounted.
@@ -894,7 +921,7 @@ class MountService extends IMountService.Stub
      * to make sure we dont end up in an instable state and kill some core
      * processes.
      */
-    private int doUnmountVolume(String path, boolean force) {
+    private int doUnmountOneVolume(String path, boolean force) {
         if (!getVolumeState(path).equals(Environment.MEDIA_MOUNTED)) {
             return VoldResponseCode.OpFailedVolNotMounted;
         }
@@ -931,6 +958,29 @@ class MountService extends IMountService.Stub
                 return StorageResultCode.OperationFailedInternalError;
             }
         }
+    }
+
+    private int doUnmountVolume(String path, boolean force) {
+        ArrayList<String> volumes = getShareableVolumes();
+        Collections.sort(volumes, Collections.reverseOrder());
+        Slog.i(TAG, "doUnmountVolume: Unmounting " + path);
+        String testpath;
+        if (path.endsWith("/"))
+            testpath = path;
+        else
+            testpath = path + "/";
+        for (String curpath: volumes) {
+            if (curpath.equals(path))
+                break;
+            else {
+                if (curpath.startsWith(testpath)) {
+                    int rc = doUnmountOneVolume(curpath, force);
+                    if (rc != StorageResultCode.OperationSucceeded)
+                        return rc;
+                }
+            }
+        }
+        return doUnmountOneVolume(path, force);
     }
 
     private int doFormatVolume(String path) {
@@ -1018,6 +1068,7 @@ class MountService extends IMountService.Stub
              * USB mass storage disconnected while enabled
              */
             final ArrayList<String> volumes = getShareableVolumes();
+            Collections.sort(volumes);
             new Thread() {
                 public void run() {
                     try {
